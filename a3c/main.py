@@ -44,7 +44,7 @@ N_STEP_RETURN = 5
 GAMMA_N = GAMMA ** N_STEP_RETURN
 
 N_WORKERS = 8   # スレッドの数
-Tmax = 10   # 各スレッドの更新ステップ間隔
+T_MAX = 10   # 各スレッドの更新ステップ間隔
 
 # ε-greedyのパラメータ
 EPS_START = 0.5
@@ -118,6 +118,76 @@ class Worker_thread:
             if IS_LEARNED and self.thread_type is 'test':   # test threadが走る
                 time.sleep(3.0)
                 self.environment.run()
+
+
+class Environment:
+    # env
+    # tensorflowのスレッドになる
+    total_reward_vec = np.zeros(10) # 総報酬を10試行分格納して，平均総報酬を求める
+    count_trial_each_thread = 0 # 各環境の試行回数
+
+    def __init__(self, name, thread_type, parameter_server):
+        self.name = name
+        self.thread_type = thread_type
+        self.env = gym.make(ENV)
+        self.agent = Agent(name, parameter_server)  # 環境内で行動するagenetを生成
+
+    def run(self):
+        self.agent.brain.pull_parameter_server()    # ParameterServerの重みを自身のLocalBrainにコピー
+        global frames   # session全体での試行回数
+        global IS_LEARNED
+
+        if self.thread_type is 'test' and self.count_trial_each_thread == 0:
+            self.env.reset()
+            self.env = gym.wrappers.Monitor(self.env, './movie/A3C')    # 動画保存する場合
+
+        s = self.env.reset()
+        r_sum = 0
+        step = 0
+        while True:
+            if self.thread_type is 'test':
+                self.env.render()   # 学習後のテストではrenderingする
+                time.sleep(0.1)
+            
+            a = self.agent.act(s)   # actionを決定
+            s_, r, done, info = self.env.step(a)    # 行動を実施
+            step += 1
+            frames += 1 # セッション全体の行動回数をカウント
+
+            r = 0
+            if done:    # terminal state
+                s_ = None
+                if step < 199:
+                    r = -1
+                else:
+                    r = 1
+
+            # Advantageを考慮したrewardと経験を，localBrainにpush
+            self.agent.advantage_push_local_brain(s, a, r, s_)
+
+            s = s_
+            r_sum += r
+            # 終了時がT_MAXごとに，parameterServerのweightを更新し，それをコピーする
+            if done or step % T_MAX == 0:    
+                if not IS_LEARNED and self.thread_type is 'train':
+                    self.agent.brain.update_parameter_server()
+                    self.agent.brain.pull_parameter_server()
+            
+            if done:
+                self.total_reward_vec = np.hstack((self.total_reward_vec[1:], step))    # 合計報酬の古いものを削除して，最新の10個を保持
+                self.count_trial_each_thread += 1   # このスレッドの総試行回数を増やす
+                break
+        
+        # 学習結果を表示
+        print('スレッド: {}\t試行回数: {}\t今回のステップ: {}\t平均ステップ: {}'.format(
+            self.name, self.count_trial_each_thread, step, self.total_reward_vec.mean()
+        ))
+
+        # スレッドで平均報酬が一定を超えたら終了
+        if self.total_reward_vec.mean() > 199:
+            IS_LEARNED = True
+            time.sleep(2.0) # この時間で，他のtrain threadが止まる
+            self.agent.brain.push_parameter_server()    # 成功したスレッドのパラメータをparameterSereverにわたす
 
 
 
