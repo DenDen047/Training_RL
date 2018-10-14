@@ -279,6 +279,38 @@ class LocalBrain:
         with tf.name_scope(name):
             self.train_queue = [[] for i in range(5)]   # s, a, r, s', s' terminal mask
             K.set_session(SESS)
+            self.model = self._build_model()    # NNを生成
+            self._build_graph(name, parameter_server)   # NNの学習やメソッドを定義
+
+    def _build_model(self):
+        l_input = Input(batch_shape=(None, NUM_STATES))
+        l_dense = Dense(16, activation='relu')(l_input)
+        out_actions = Dense(NUM_ACTIONS, activation='softmax')(l_dense)
+        out_value = Dense(1, activation='linear')(l_dense)
+        model = Model(inputs=[l_input], outputs=[out_actions, out_value])
+        model._make_predict_function()  # have to initialize before threading
+        return model
+    
+    def _build_graph(self, name, parameter_server):
+        # tensorflowでNNの重みをどう学習させるかを定義する
+        self.s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))
+        self.a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
+        self.r_t = tf.placeholder(tf.float32, shape=(None, 1))
+
+        p, v = self.model(self.s_t)
+
+        # loss関数を定義
+        log_prob = tf.log(tf.reduce_sum(p * self.a_t, axis=1, keep_dims=True) + 1e-10)
+        advantage = self.r_t - v
+        loss_policy = - log_prob * tf.stop_gradient(advantage)  # stop_gradientでadvantageは定数として扱う
+        loss_value = LOSS_V * tf.square(advantage)  # minimize value error
+        entropy = LOSS_ENTROPY * tf.reduce_sum(p * tf.log(p + 1e-10), axis=1, keep_dims=True)   # maximize entropy(regularization)
+        self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
+
+        # 重みの変数を定義
+        self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=name)   # パラメータを宣言
+        # 勾配を取得する定義
+        self.grads = tf.gradients(self.loss_total, self.weights_params)
 
 
 
