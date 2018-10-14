@@ -247,6 +247,19 @@ class Agent(object):
             self.memory.pop(0)
 
 
+class ParameterServer:
+    # グローバルなtensorflowのDNNのクラス
+    def __init__(self):
+        with tf.variable_scope('parameter_server'): # スレッド名で重み変数になめを与えて，識別している
+            self.model = sefl._build_model()
+        
+        # serverのパラメータ宣言
+        self.weights_params = tf.get_collection(
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope='parameter_server')
+        self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)    # loss関数を最小化していくoptimizerの定義
+        
+
+
 
 
 if __name__ == "__main__":
