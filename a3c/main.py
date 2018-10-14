@@ -167,9 +167,9 @@ class Environment:
 
             s = s_
             r_sum += r
-            # 終了時がT_MAXごとに，parameterServerのweightを更新し，それをコピーする
             if done or step % T_MAX == 0:    
                 if not IS_LEARNED and self.thread_type is 'train':
+                    # 終了時がT_MAXごとに，parameterServerのweightを更新し，それをコピーする
                     self.agent.brain.update_parameter_server()
                     self.agent.brain.pull_parameter_server()
             
@@ -189,6 +189,62 @@ class Environment:
             time.sleep(2.0) # この時間で，他のtrain threadが止まる
             self.agent.brain.push_parameter_server()    # 成功したスレッドのパラメータをparameterSereverにわたす
 
+
+class Agent(object):
+    def __init__(self, name, parameter_server):
+        self.brain = LocalBrain(name, parameter_server) # 行動を決定するための脳
+        self.memory = []    # s,a,r,s_を保存するメモリ
+        self.r_sum = 0.     # 時間割引した「今からNステップ後までの」総報酬r_sum
+
+    def act(self, s):
+        if frames >= EPS_STEPS: # e-greedy法で行動を決定する
+            eps = EPS_END
+        else:
+            eps = EPS_START + frames * (EPS_END - EPS_START) / EPS_STEPS    # linearly interpolate
+
+        if random.random() < eps:
+            return random.randint(0, NUM_ACTIONS - 1)   # ランダムに行動
+        else:
+            s = np.array([s])
+            p = self.brain.predict_p(s)
+
+            # a = np.argmax(p)    # 最大確率の行動を選択
+            a = np.random.choice(NUM_ACTIONS, p=p[0])   # 確率p[0]に従って，行動を選択
+
+            return a
+
+    def advantage_push_local_brain(self, s, a, r, s_):  # advantageを考慮したs,a,r,s_っをbrainに与える
+        def get_sample(memory, n):  
+            # advantageを考慮し，
+            # メモリからnステップ後の状態とnステップ後までのr_sumを取得する関数
+            s, a, _, _  = memory[0]
+            _, _, _, s_ = memory[n - 1]
+            return s, a, self.r_sum, s_
+
+        # one-hotコーティングしたa_catsを作り，s,a_cats,r,s_を自分のメモリに追加
+        a_cats = np.zeros(NUM_ACTIONS)  # turn action into one-hot representation
+        a_cats[a] = 1
+        self.memory.append((s, a_cats, r, s_))
+
+        # 前ステップの「時間割引Nステップ分の総報酬r_sum」を利用して，現ステップのr_sumを計算
+        self.r_sum = (self.r_sum  + r * GAMMA_N) / GAMMA    # r0は後で引き算している
+
+        # advantageを考慮しながら，localBrainに経験を入力する
+        if s_ is None:
+            while len(self.memory) > 0:
+                n = len(self.memory)
+                s, a, r, s_ = get_sample(self.memory, n)
+                self.brain.train_push(s, a, r, s_)
+                self.r_sum = (self.r_sum - self.memory[0][2]) / GAMMA
+                self.memory.pop(0)  # 指定した位置の要素を削除し、値を取得
+
+            self.r_sum = 0  # 次の試行に向けてリセットしておく
+
+        if len(self.memory) >= N_STEP_RETURN:
+            s, a, r, s_ = get_sample(self.memory, N_STEP_RETURN)
+            self.brain.train_push(s, a, r, s_)
+            self.r_sum = self.r_sum - self.memory[0][2] # r0を引き算
+            self.memory.pop(0)
 
 
 
