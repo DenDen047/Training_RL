@@ -53,10 +53,10 @@ EPS_STEPS = 200*N_WORKERS
 
 # 共有変数
 IS_LEARNED = False  # 学習が終了したことを示すフラグ
+FRAMES = 0  # 全スレッドで共有して使用する総ステップ数
+SESS = tf.Session() # Tensorflowのセッション開始
 
 def main():
-    frames = 0  # 全スレッドで共有して使用する総ステップ数
-    sess = tf.Session() # Tensorflowのセッション開始
 
     # スレッドを作成する
     with tf.device('/cpu:0'):
@@ -84,7 +84,7 @@ def main():
 
     # Tensorflowでマルチスレッドを実行
     coord = tf.train.Coordinator()  # tensorflowでマルチスレッドにするための準備
-    sess.run(tf.global_variables_initializer()) # 変数を初期化
+    SESS.run(tf.global_variables_initializer()) # 変数を初期化
 
     running_threads = []
     for worker in threads:
@@ -134,7 +134,7 @@ class Environment:
 
     def run(self):
         self.agent.brain.pull_parameter_server()    # ParameterServerの重みを自身のLocalBrainにコピー
-        global frames   # session全体での試行回数
+        global FRAMES   # session全体での試行回数
         global IS_LEARNED
 
         if self.thread_type is 'test' and self.count_trial_each_thread == 0:
@@ -152,7 +152,7 @@ class Environment:
             a = self.agent.act(s)   # actionを決定
             s_, r, done, info = self.env.step(a)    # 行動を実施
             step += 1
-            frames += 1 # セッション全体の行動回数をカウント
+            FRAMES += 1 # セッション全体の行動回数をカウント
 
             r = 0
             if done:    # terminal state
@@ -197,10 +197,10 @@ class Agent(object):
         self.r_sum = 0.     # 時間割引した「今からNステップ後までの」総報酬r_sum
 
     def act(self, s):
-        if frames >= EPS_STEPS: # e-greedy法で行動を決定する
+        if FRAMES >= EPS_STEPS: # e-greedy法で行動を決定する
             eps = EPS_END
         else:
-            eps = EPS_START + frames * (EPS_END - EPS_START) / EPS_STEPS    # linearly interpolate
+            eps = EPS_START + FRAMES * (EPS_END - EPS_START) / EPS_STEPS    # linearly interpolate
 
         if random.random() < eps:
             return random.randint(0, NUM_ACTIONS - 1)   # ランダムに行動
@@ -258,7 +258,27 @@ class ParameterServer:
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='parameter_server')
         self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)    # loss関数を最小化していくoptimizerの定義
         
+    def _build_model(self):
+        # kerasでネットワークを定義
+        l_input = Input(batch_shape=(None, NUM_STATES))
+        l_dense = Dense(16, activation='relu')(l_input)
+        out_actions = Dense(NUM_ACTIONS, activation='softmax')(l_dense)
+        out_value = Dense(1, activation='linear')(l_dense)
 
+        model = Model(inputs=[l_input], outputs=[out_actions, out_value])
+
+        # Qネットワークを可視化
+        plot_model(model, to_file='A3C.png', show_shapes=True)
+
+        return model
+
+
+class LocalBrain:
+    def __init__(self, name, parameter_server):
+        # globalなparameter_serverをメンバ変数として持つ
+        with tf.name_scope(name):
+            self.train_queue = [[] for i in range(5)]   # s, a, r, s', s' terminal mask
+            K.set_session(SESS)
 
 
 
