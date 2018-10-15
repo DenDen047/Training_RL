@@ -253,7 +253,8 @@ class Agent(object):
 class ParameterServer:
     # グローバルなtensorflowのDNNのクラス
     def __init__(self):
-        with tf.variable_scope('parameter_server'): # スレッド名で重み変数になめを与えて，識別している
+        # スレッド名で重み変数に名前を与えて，識別している
+        with tf.variable_scope('parameter_server'): 
             self.model = self._build_model()
 
         # serverのパラメータ宣言
@@ -311,7 +312,8 @@ class LocalBrain:
         self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
 
         # 重みの変数を定義
-        self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=name)   # パラメータを宣言
+        self.weights_params = tf.get_collection(
+            tf.GraphKeys.TRAINABLE_VARIABLES, scope=name)   # パラメータを宣言
         # 勾配を取得する定義
         self.grads = tf.gradients(self.loss_total, self.weights_params)
 
