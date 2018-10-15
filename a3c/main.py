@@ -56,7 +56,7 @@ IS_LEARNED = False  # 学習が終了したことを示すフラグ
 FRAMES = 0  # 全スレッドで共有して使用する総ステップ数
 SESS = tf.Session() # Tensorflowのセッション開始
 
-def main():
+def main(): 
 
     # スレッドを作成する
     with tf.device('/cpu:0'):
