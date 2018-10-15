@@ -125,23 +125,23 @@ class Environment:
         self.name = name
         self.thread_type = thread_type
         self.env = gym.make(ENV)
-        self.agent = Agent(name, parameter_server)  # 環境内で行動するagenetを生成
+        self.agent = Agent(brain)   # 環境内で行動するagenetを生成
 
     def run(self):
-        self.agent.brain.pull_parameter_server()    # ParameterServerの重みを自身のLocalBrainにコピー
+        # ParameterServerの重みを自身のLocalBrainにコピー
         global FRAMES   # session全体での試行回数
         global IS_LEARNED
 
         if self.thread_type is 'test' and self.count_trial_each_thread == 0:
             self.env.reset()
-            self.env = gym.wrappers.Monitor(self.env, './movie/A3C')    # 動画保存する場合
+            self.env = gym.wrappers.Monitor(self.env, './movie/PPO')    # 動画保存する場合
 
         s = self.env.reset()
         r_sum = 0
         step = 0
         while True:
             if self.thread_type is 'test':
-                self.env.render()   # 学習後のテストではrenderingする
+                self.env.render()   # 学習後のテストでは描画
                 time.sleep(0.1)
 
             a = self.agent.act(s)   # actionを決定
@@ -158,15 +158,14 @@ class Environment:
                     r = 1
 
             # Advantageを考慮したrewardと経験を，localBrainにpush
-            self.agent.advantage_push_local_brain(s, a, r, s_)
+            self.agent.advantage_push_brain(s, a, r, s_)
 
             s = s_
             r_sum += r
             if done or step % T_MAX == 0:
+                # 終了時にTmaxごとに，parameterServerの重みを更新
                 if not IS_LEARNED and self.thread_type is 'train':
-                    # 終了時がT_MAXごとに，parameterServerのweightを更新し，それをコピーする
-                    self.agent.brain.update_parameter_server()
-                    self.agent.brain.pull_parameter_server()
+                    self.agenet.brain.update_parameter_server()
 
             if done:
                 self.total_reward_vec = np.hstack((self.total_reward_vec[1:], step))    # 合計報酬の古いものを削除して，最新の10個を保持
@@ -190,7 +189,7 @@ class Environment:
 
 class Agent(object):
     def __init__(self, name, parameter_server):
-        self.brain = LocalBrain(name, parameter_server) # 行動を決定するための脳
+        self.brain = brain  # 行動を決定するための脳
         self.memory = []    # s,a,r,s_を保存するメモリ
         self.r_sum = 0.     # 時間割引した「今からNステップ後までの」総報酬r_sum
 
@@ -249,7 +248,7 @@ class ParameterServer:
     # グローバルなtensorflowのDNNのクラス
     def __init__(self):
         # スレッド名で重み変数に名前を与えて，識別している
-        with tf.variable_scope('parameter_server'): 
+        with tf.variable_scope('parameter_server'):
             self.model = self._build_model()
 
         # serverのパラメータ宣言
@@ -272,7 +271,7 @@ class ParameterServer:
         return model
 
 
-class LocalBrain:
+class Brain:
     def __init__(self, name, parameter_server):
         # globalなparameter_serverをメンバ変数として持つ
         with tf.name_scope(name):
@@ -299,61 +298,53 @@ class LocalBrain:
         p, v = self.model(self.s_t)
 
         # loss関数を定義
-        log_prob = tf.log(tf.reduce_sum(p * self.a_t, axis=1, keep_dims=True) + 1e-10)
-        advantage = self.r_t - v
-        loss_policy = - log_prob * tf.stop_gradient(advantage)  # stop_gradientでadvantageは定数として扱う
+        advantage = tf.subtract(self.r_t, v)
+        self.prob = tf.multiply(p, self.a_t) + 1e-10
+        r_theta = tf.div(self.prob, self.prob_old)
+        advantage_CPI = tf.multiply(r_theta, tf.stop_gradient(advantage))
+
+        # CLIPした場合を計算して，小さい方を使用する
+        r_clip = r_theta
+        r_clip = tf.clip_by_value(
+            r_clip,
+            r_theta - EPSILON, r_theta + EPSILON
+        )
+
+        clipped_advantage_CPI = tf.multiply(r_clip, tf.stop_gradient(advantage))
+        loss_CLIP = -tf.reduce_mean(
+            tf.minimum(advantage_CPI, clipped_advantage_CPI),
+            axis=1,
+            keep_dims=True)
+
         loss_value = LOSS_V * tf.square(advantage)  # minimize value error
-        entropy = LOSS_ENTROPY * tf.reduce_sum(p * tf.log(p + 1e-10), axis=1, keep_dims=True)   # maximize entropy(regularization)
-        self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
+        entropy = LOSS_ENTROPY * tf.reduce_sum(
+            p * tf.log(p + 1e-10), axis=1, keep_dims=True
+        )   # maximize entropy(regularization)
 
-        # 重みの変数を定義
-        self.weights_params = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, scope=name)   # パラメータを宣言
-        # 勾配を取得する定義
-        self.grads = tf.gradients(self.loss_total, self.weights_params)
+        self.loss_total = tf.reduce_mean(loss_CLIP + loss_value - entropy)
 
-        # ParameterServerの重み変数更新の定義(zipで各変数ごとに計算)
-        self.update_global_weight_params = \
-            parameter_server.optimizer.apply_gradients(zip(
-                self.grads, parameter_server.weights_params
-            ))
-
-        # PrameterServerの重み変数の値を，localBrainにコピーする定義
-        self.pull_global_weight_params = [
-            l_p.assign(l_p) for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)
-        ]
-        # localBrainの重み変数の値を、PrameterServerにコピーする定義
-        self.push_local_weight_params = [
-            g_p.assign(l_p) for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)
-        ]
-
-
-    def pull_parameter_server(self):
-        # localスレッドがglobalの重みを取得する
-        SESS.run(self.pull_global_weight_params)
-
-    def push_parameter_server(self):
-        # localスレッドが重みをglobalにコピーする
-        SESS.run(self.push_local_weight_params)
+        # 求めた勾配で重み変数を更新する定義
+        minimize = self.opt.minimize(self.loss_total)
+        return minimize
 
     def update_parameter_server(self):
-        # localBrainの勾配でParameterServerの重みを学習・更新
+        # ParameterServerを更新する
         if len(self.train_queue[0]) < MIN_BATCH:
             # データが溜まっていない場合は更新しない
             return
 
         s, a, r, s_, s_mask = self.train_queue
         self.train_queue = [[] for i in range(5)]
-        s =np.vstack(s)
-        a =np.vstack(a)
-        r =np.vstack(r)
-        s_ =np.vstack(s_)
-        s_mask =np.vstack(s_mask)
+        s = np.vstack(s)
+        a = np.vstack(a)
+        r = np.vstack(r)
+        s_ = np.vstack(s_)
+        s_mask = np.vstack(s_mask)
 
-        # Nステップ後の状態s_から，その先，得られるであろう時間割引総報酬vを求める
+        # Nステップ後の状態s_から，その先で得られるであろう時間割引総報酬v
         _, v = self.model.predict(s_)
 
-        # N-1ステップあとまでの時間割引総報酬rに，
+        # N-1ステップ後までの時間割引総報酬rに，
         # Nから先に得られるであろう総報酬vに割引N乗したものを足す
         r = r + GAMMA_N * v * s_mask    # set v to 0 where s_ is terminal state
         feed_dict = {
@@ -362,11 +353,11 @@ class LocalBrain:
             self.r_t: r
         }   # 重みの更新に使用するデータ
 
-        # ParameterServerの重みを更新
-        SESS.run(self.update_global_weight_params, feed_dict)
+        minimize = self.graph
+        SESS.run(minimize, feed_dict)   # Brainの重みを更新
+        self.prob_old = self.prob
 
-    def predict_p(self, s):
-        # 状態skら各actionの確率pベクトルを返す
+    def predict_p():
         p, v = self.model.predict(s)
         return p
 
