@@ -312,6 +312,71 @@ class LocalBrain:
         # 勾配を取得する定義
         self.grads = tf.gradients(self.loss_total, self.weights_params)
 
+        # ParameterServerの重み変数更新の定義(zipで各変数ごとに計算)
+        self.update_global_weight_params = \
+            parameter_server.optimizer.apply_gradients(zip(
+                self.grads, parameter_server.weights_params
+            ))
+        
+        # PrameterServerの重み変数の値を，localBrainにコピーする定義
+        self.pull_global_wegith_params[
+            l_p.assign(l_p) for g_p, l_p in zip(
+                parameter_server.weights_params, self.weights_params)
+        ]
+
+    def pull_parameter_server(self):
+        # localスレッドがglobalの重みを取得する
+        SESS.run(self.pull_global_weight_params)
+
+    def push_parameter_server(self):
+        # localスレッドが重みをglobalにコピーする
+        SESS.run(self.push_local_weight_params)
+    
+    def update_parameter_server(self):
+        # localBrainの勾配でParameterServerの重みを学習・更新
+        if len(self.train_queue[0]) < MIN_BATCH:
+            # データが溜まっていない場合は更新しない
+            return
+        
+        s, a, r, s_, s_mask = self.train_queue
+        self.train_queue = [[] for i in range(5)]
+        s =np.vstack(s)
+        a =np.vstack(a)
+        r =np.vstack(r)
+        s_ =np.vstack(s_)
+        s_mask =np.vstack(s_mask)
+
+        # Nステップ後の状態s_から，その先，得られるであろう時間割引総報酬vを求める
+        _, v = self.model.predict(s_)
+
+        # N-1ステップあとまでの時間割引総報酬rに，
+        # Nから先に得られるであろう総報酬vに割引N乗したものを足す
+        r = r + GAMMA_N * N * s_mask    # set v to 0 where s_ is terminal state
+        feed_dict = {
+            self.s_t: s,
+            self.a_t: a,
+            self.r_t: r
+        }   # 重みの更新に使用するデータ
+
+        # ParameterServerの重みを更新
+        SESS.run(self.update_global_weight_params, feed_dict)   
+
+    def predict(self, s):
+        # 状態skら各actionの確率pベクトルを返す
+        p, v = self.model.predict(s)
+        return p
+
+    def train_push(self, s, a, r, s_):
+        self.train_queue[0].append(s)
+        self.train_queue[1].append(a)
+        self.train_queue[2].append(r)
+
+        if s_ is None:
+            self.train_queue[3].append(NONE_STATE)
+            self.train_queue[4].append(0.)
+        else:
+            self.train_queue[3].append(s_)
+            self.train_queue[4].append(1.)
 
 
 if __name__ == "__main__":
