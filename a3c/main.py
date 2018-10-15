@@ -49,14 +49,14 @@ T_MAX = 10   # 各スレッドの更新ステップ間隔
 # ε-greedyのパラメータ
 EPS_START = 0.5
 EPS_END = 0.0
-EPS_STEPS = 200*N_WORKERS
+EPS_STEPS = 200 * N_WORKERS
 
 # 共有変数
 IS_LEARNED = False  # 学習が終了したことを示すフラグ
 FRAMES = 0  # 全スレッドで共有して使用する総ステップ数
 SESS = tf.Session() # Tensorflowのセッション開始
 
-def main(): 
+def main():
 
     # スレッドを作成する
     with tf.device('/cpu:0'):
@@ -65,7 +65,7 @@ def main():
         # 学習用スレッドを準備
         for i in range(N_WORKERS):
             thread_name = 'local_thread_{}'.format(i+1)
-            thread.append(
+            threads.append(
                 Worker_thread(
                     thread_name=thread_name,
                     thread_type='train',
@@ -74,7 +74,7 @@ def main():
             )
 
         # 学習後にテストで走るスレッドを用意
-        thread.append(
+        threads.append(
             Worker_thread(
                 thread_name='test_thread',
                 thread_type='test',
@@ -92,7 +92,7 @@ def main():
         t = threading.Thread(target=job)
         t.start()
         running_threads.append(t)
-    
+
     # スレッドの終了をあわせる
     coord.join(running_threads)
 
@@ -103,15 +103,15 @@ class Worker_thread:
     def __init__(self, thread_name, thread_type, parameter_server):
         self.environment = Environment(thread_name, thread_type, parameter_server)
         self.thread_type = thread_type
-    
+
     def run(self):
         while True:
             if not(IS_LEARNED) and self.thread_type is 'train': # train threadが走る
                 self.environment.run()
-            
+
             if not(IS_LEARNED) and self.thread_type is 'test':  # test threadを止めとく
                 time.sleep(1.0)
-            
+
             if IS_LEARNED and self.thread_type is 'train':  # train threadを止めとく
                 time.sleep(3.0)
 
@@ -148,7 +148,7 @@ class Environment:
             if self.thread_type is 'test':
                 self.env.render()   # 学習後のテストではrenderingする
                 time.sleep(0.1)
-            
+
             a = self.agent.act(s)   # actionを決定
             s_, r, done, info = self.env.step(a)    # 行動を実施
             step += 1
@@ -167,19 +167,22 @@ class Environment:
 
             s = s_
             r_sum += r
-            if done or step % T_MAX == 0:    
+            if done or step % T_MAX == 0:
                 if not IS_LEARNED and self.thread_type is 'train':
                     # 終了時がT_MAXごとに，parameterServerのweightを更新し，それをコピーする
                     self.agent.brain.update_parameter_server()
                     self.agent.brain.pull_parameter_server()
-            
+
             if done:
                 self.total_reward_vec = np.hstack((self.total_reward_vec[1:], step))    # 合計報酬の古いものを削除して，最新の10個を保持
                 self.count_trial_each_thread += 1   # このスレッドの総試行回数を増やす
                 break
-        
+
         # 学習結果を表示
-        print('スレッド: {}\t試行回数: {}\t今回のステップ: {}\t平均ステップ: {}'.format(
+        # print(u'スレッド: {}\t試行回数: {}\t今回のステップ: {}\t平均ステップ: {}'.format(
+        #     self.name, self.count_trial_each_thread, step, self.total_reward_vec.mean()
+        # ))
+        print('Thread: {}\tCount Traial: {}\tStep: {}\tAvgStep: {}'.format(
             self.name, self.count_trial_each_thread, step, self.total_reward_vec.mean()
         ))
 
@@ -214,7 +217,7 @@ class Agent(object):
             return a
 
     def advantage_push_local_brain(self, s, a, r, s_):  # advantageを考慮したs,a,r,s_っをbrainに与える
-        def get_sample(memory, n):  
+        def get_sample(memory, n):
             # advantageを考慮し，
             # メモリからnステップ後の状態とnステップ後までのr_sumを取得する関数
             s, a, _, _  = memory[0]
@@ -252,12 +255,12 @@ class ParameterServer:
     def __init__(self):
         with tf.variable_scope('parameter_server'): # スレッド名で重み変数になめを与えて，識別している
             self.model = self._build_model()
-        
+
         # serverのパラメータ宣言
         self.weights_params = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, scope='parameter_server')
         self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)    # loss関数を最小化していくoptimizerの定義
-        
+
     def _build_model(self):
         # kerasでネットワークを定義
         l_input = Input(batch_shape=(None, NUM_STATES))
@@ -267,8 +270,8 @@ class ParameterServer:
 
         model = Model(inputs=[l_input], outputs=[out_actions, out_value])
 
-        # Qネットワークを可視化
-        plot_model(model, to_file='A3C.png', show_shapes=True)
+        # # Qネットワークを可視化
+        # plot_model(model, to_file='A3C.png', show_shapes=True)
 
         return model
 
@@ -290,7 +293,7 @@ class LocalBrain:
         model = Model(inputs=[l_input], outputs=[out_actions, out_value])
         model._make_predict_function()  # have to initialize before threading
         return model
-    
+
     def _build_graph(self, name, parameter_server):
         # tensorflowでNNの重みをどう学習させるかを定義する
         self.s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))
@@ -317,9 +320,9 @@ class LocalBrain:
             parameter_server.optimizer.apply_gradients(zip(
                 self.grads, parameter_server.weights_params
             ))
-        
+
         # PrameterServerの重み変数の値を，localBrainにコピーする定義
-        self.pull_global_wegith_params = [
+        self.pull_global_weight_params = [
             l_p.assign(l_p) for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)
         ]
         # localBrainの重み変数の値を、PrameterServerにコピーする定義
@@ -335,13 +338,13 @@ class LocalBrain:
     def push_parameter_server(self):
         # localスレッドが重みをglobalにコピーする
         SESS.run(self.push_local_weight_params)
-    
+
     def update_parameter_server(self):
         # localBrainの勾配でParameterServerの重みを学習・更新
         if len(self.train_queue[0]) < MIN_BATCH:
             # データが溜まっていない場合は更新しない
             return
-        
+
         s, a, r, s_, s_mask = self.train_queue
         self.train_queue = [[] for i in range(5)]
         s =np.vstack(s)
@@ -355,7 +358,7 @@ class LocalBrain:
 
         # N-1ステップあとまでの時間割引総報酬rに，
         # Nから先に得られるであろう総報酬vに割引N乗したものを足す
-        r = r + GAMMA_N * N * s_mask    # set v to 0 where s_ is terminal state
+        r = r + GAMMA_N * v * s_mask    # set v to 0 where s_ is terminal state
         feed_dict = {
             self.s_t: s,
             self.a_t: a,
@@ -363,9 +366,9 @@ class LocalBrain:
         }   # 重みの更新に使用するデータ
 
         # ParameterServerの重みを更新
-        SESS.run(self.update_global_weight_params, feed_dict)   
+        SESS.run(self.update_global_weight_params, feed_dict)
 
-    def predict(self, s):
+    def predict_p(self, s):
         # 状態skら各actionの確率pベクトルを返す
         p, v = self.model.predict(s)
         return p

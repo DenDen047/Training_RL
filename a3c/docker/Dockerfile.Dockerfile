@@ -43,6 +43,10 @@ RUN python3 -m pip install transforms3d
 RUN python3 -m pip install pandas
 RUN python3 -m pip install h5py==2.8.0rc1
 
+# others
+RUN python3 -m pip isntall keras
+RUN python3 -m pip isntall pydot
+
 # setting
 ENTRYPOINT [""]
 CMD ["/startup.sh"]

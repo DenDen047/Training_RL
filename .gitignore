@@ -58,3 +58,4 @@ docs/_build/
 target/
 
 sftp.json
+sftp-config.json
