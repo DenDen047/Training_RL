@@ -251,7 +251,7 @@ class ParameterServer:
     # グローバルなtensorflowのDNNのクラス
     def __init__(self):
         with tf.variable_scope('parameter_server'): # スレッド名で重み変数になめを与えて，識別している
-            self.model = sefl._build_model()
+            self.model = self._build_model()
         
         # serverのパラメータ宣言
         self.weights_params = tf.get_collection(
@@ -319,10 +319,14 @@ class LocalBrain:
             ))
         
         # PrameterServerの重み変数の値を，localBrainにコピーする定義
-        self.pull_global_wegith_params[
-            l_p.assign(l_p) for g_p, l_p in zip(
-                parameter_server.weights_params, self.weights_params)
+        self.pull_global_wegith_params = [
+            l_p.assign(l_p) for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)
         ]
+        # localBrainの重み変数の値を、PrameterServerにコピーする定義
+        self.push_local_weight_params = [
+            g_p.assign(l_p) for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)
+        ]
+
 
     def pull_parameter_server(self):
         # localスレッドがglobalの重みを取得する
