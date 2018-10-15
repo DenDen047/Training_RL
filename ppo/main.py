@@ -1,7 +1,6 @@
-
 # coding:utf-8
 # -----------------------------------
-# OpenGym CartPole-v0 with A3C on CPU
+# OpenGym CartPole-v0 with PPO on CPU
 # -----------------------------------
 #
 # A3C implementation with TensorFlow multi threads.
@@ -57,30 +56,26 @@ FRAMES = 0  # 全スレッドで共有して使用する総ステップ数
 SESS = tf.Session() # Tensorflowのセッション開始
 
 def main():
-
     # スレッドを作成する
     with tf.device('/cpu:0'):
-        parameter_server = ParameterServer()    # 全スレッドで共有するparamを持つインスタンス
-        threads = []    # 並列で走るスレッド
-        # 学習用スレッドを準備
-        for i in range(N_WORKERS):
-            thread_name = 'local_thread_{}'.format(i+1)
-            threads.append(
-                Worker_thread(
-                    thread_name=thread_name,
-                    thread_type='train',
-                    parameter_server=parameter_server
-                )
-            )
+        brain = Brain() # NNのクラス
+        threads = []    # 並列して走るスレッド
 
-        # 学習後にテストで走るスレッドを用意
-        threads.append(
-            Worker_thread(
-                thread_name='test_thread',
-                thread_type='test',
-                parameter_server=parameter_server
-            )
-        )
+        # 学習するスレッドを準備
+        for i in range(N_WORKERS):
+            thread_name = 'local_thread{}'.format(i+1)
+            threads.append(Worker_thread(
+                thread_name=thread_name,
+                thread_type='train',
+                brain=brain
+            ))
+
+        # 学習後にテストで走るスレッドを準備
+        threads.append(Worker_thread(
+            thread_name='test_thread',
+            thread_type='test',
+            brain=brain
+        ))
 
     # Tensorflowでマルチスレッドを実行
     coord = tf.train.Coordinator()  # tensorflowでマルチスレッドにするための準備
