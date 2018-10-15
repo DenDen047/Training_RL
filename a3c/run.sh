@@ -11,7 +11,8 @@ TAG=latest
 if [ $1 = "train" ]; then
     PORTS="-p 6006:6006"
     # 普通に実行する
-    RUN_CMD="python3 train.py"
+    RUN_CMD="python3 main.py"
+    ${RUN_CMD}
     exit 0
 elif [ $1 = "vnc" ]; then
     PORTS="-p 6080:80 -p 6081:443"
@@ -25,6 +26,6 @@ docker run -it --rm \
     ${PORTS} \
     -v ${PWD}:${WORKDIR}:ro \
     -v /data2/naoya:/data \
-    -w ${WORKDIR}/src \
+    -w ${WORKDIR} \
     ${IMAGE}:${TAG} \
     ${RUN_CMD}
