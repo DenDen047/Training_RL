@@ -63,7 +63,7 @@ def main():
 
         # 学習するスレッドを準備
         for i in range(N_WORKERS):
-            thread_name = 'local_thread{}'.format(i+1)
+            thread_name = 'train_thread{}'.format(i+1)
             threads.append(Worker_thread(
                 thread_name=thread_name,
                 thread_type='train',
@@ -101,10 +101,10 @@ class Worker_thread:
 
     def run(self):
         while True:
-            if not(IS_LEARNED) and self.thread_type is 'train': # train threadが走る
+            if not IS_LEARNED and self.thread_type is 'train': # train threadが走る
                 self.environment.run()
 
-            if not(IS_LEARNED) and self.thread_type is 'test':  # test threadを止めとく
+            if not IS_LEARNED and self.thread_type is 'test':  # test threadを止めとく
                 time.sleep(1.0)
 
             if IS_LEARNED and self.thread_type is 'train':  # train threadを止めとく
