@@ -135,9 +135,14 @@ class Environment:
             self.env.reset()
             self.env = gym.wrappers.Monitor(self.env, './movie/PPO')    # 動画保存する場合
 
+        # 環境のリセット
         s = self.env.reset()
-        r_sum = 0
-        step = 0
+
+        # 各種変数
+        r_sum = 0   # 合計報酬
+        step = 0    # ループ回数（時刻t）
+
+        # メインループ
         while True:
             if self.thread_type is 'test':
                 self.env.render()   # 学習後のテストでは描画
@@ -150,19 +155,20 @@ class Environment:
 
             r = 0
             if done:    # terminal state
-                s_ = None
+                s_ = None   # doneなのでs+1の状態は不要
                 if step < 199:
                     r = -1
                 else:
                     r = 1
 
-            # Advantageを考慮したrewardと経験を，localBrainにpush
+            # 報酬と経験を，Brainにpush
             self.agent.advantage_push_brain(s, a, r, s_)
 
+            # 情報を更新
             s = s_
             r_sum += r
+            # 終了時にTmaxごとに，parameterServerの重みを更新
             if done or FRAMES % T_MAX == 0:
-                # 終了時にTmaxごとに，parameterServerの重みを更新
                 if not IS_LEARNED and self.thread_type is 'train':
                     self.agenet.brain.update_parameter_server()
 
@@ -187,7 +193,7 @@ class Environment:
 
 class Agent(object):
     # 行動を決定するクラス
-    def __init__(self, name, parameter_server):
+    def __init__(self, brain):
         self.brain = brain  # 行動を決定するための脳
         self.memory = []    # s,a,r,s_を保存するメモリ
         self.r_sum = 0.     # 時間割引した「今からNステップ後までの」総報酬r_sum
@@ -212,8 +218,8 @@ class Agent(object):
         def get_sample(memory, n):
             # advantageを考慮し，
             # メモリからnステップ後の状態とnステップ後までのr_sumを取得する関数
-            s, a, _, _  = memory[0]
-            _, _, _, s_ = memory[n - 1]
+            s, a, _, _  = memory[0] # 現在の情報
+            _, _, _, s_ = memory[n - 1] # nステップ後の情報
             return s, a, self.r_sum, s_
 
         # one-hotコーティングしたa_catsを作り，s,a_cats,r,s_を自分のメモリに追加
@@ -222,22 +228,26 @@ class Agent(object):
         self.memory.append((s, a_cats, r, s_))
 
         # 前ステップの「時間割引Nステップ分の総報酬r_sum」を利用して，現ステップのr_sumを計算
-        self.r_sum = (self.r_sum + r * GAMMA_N) / GAMMA    # r0は後で引き算している
+        # r0は後で引き算している
+        # r0には取り出したい期間以前の報酬情報を含んでいる
+        self.r_sum = (self.r_sum + r * GAMMA_N) / GAMMA
 
-        # advantageを考慮しながら，localBrainに経験を入力する
-        if s_ is None:
+        # advantageを考慮しながら，Brainに経験を入力する
+        if s_ is None:  # done=1 状態
+            # doneしているので，残っているmemoryをBrainにpush
             while len(self.memory) > 0:
                 # nステップ後のパラメータを記録
                 n = len(self.memory)
                 s, a, r, s_ = get_sample(self.memory, n)
                 self.brain.train_push(s, a, r, s_)
-                # 次のループに備えて，
+                # 次のループに備え，r0を引く
                 self.r_sum = (self.r_sum - self.memory[0][2]) / GAMMA
                 self.memory.pop(0)  # 指定した位置の要素を削除し、値を取得
 
             self.r_sum = 0  # 次の試行に向けてリセットしておく
 
-        if len(self.memory) >= N_STEP_RETURN:
+        if len(self.memory) >= N_STEP_RETURN：
+            # 十分に情報が溜まった状態で実行
             s, a, r, s_ = get_sample(self.memory, N_STEP_RETURN)
             self.brain.train_push(s, a, r, s_)
             self.r_sum -= self.memory[0][2] # r0を引き算
@@ -292,7 +302,7 @@ class Brain:
         plot_model(model, to_file='PPO.png', show_shapes=True)
         return model
 
-    def build_graph(self):
+    def _build_graph(self):
         # tensorflowでNNの重みをどう学習させるかを定義
         self.s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))
         self.a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
@@ -333,14 +343,14 @@ class Brain:
         return minimize
 
     def update_parameter_server(self):
-        # ParameterServerを更新する
+        # Brainの勾配でParameterServerの重みを学習・更新
         if len(self.train_queue[0]) < MIN_BATCH:
             # データが溜まっていない場合は更新しない
             return
 
         s, a, r, s_, s_mask = self.train_queue
         self.train_queue = [[] for i in range(5)]
-        s = np.vstack(s)
+        s = np.vstack(s)    # 行列の転置
         a = np.vstack(a)
         r = np.vstack(r)
         s_ = np.vstack(s_)
@@ -351,7 +361,7 @@ class Brain:
 
         # N-1ステップ後までの時間割引総報酬rに，
         # Nから先に得られるであろう総報酬vに割引N乗したものを足す
-        r = r + GAMMA_N * v * s_mask    # set v to 0 where s_ is terminal state
+        r += GAMMA_N * v * s_mask   # set v to 0 where s_ is terminal state
         feed_dict = {
             self.s_t: s,
             self.a_t: a,
@@ -372,10 +382,10 @@ class Brain:
         self.train_queue[1].append(a)
         self.train_queue[2].append(r)
 
-        if s_ is None:
+        if s_ is None:  # done=1
             self.train_queue[3].append(NONE_STATE)
             self.train_queue[4].append(0.)
-        else:
+        else:   # done=0
             self.train_queue[3].append(s_)
             self.train_queue[4].append(1.)
 
