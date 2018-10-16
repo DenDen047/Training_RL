@@ -11,7 +11,7 @@ TAG=latest
 if [ $1 = "train" ]; then
     PORTS="-p 6006:6006"
     # 普通に実行する
-    RUN_CMD="python3 main.py"
+    RUN_CMD="python3 ppo/main.py"
     ${RUN_CMD}
     exit 0
 elif [ $1 = "vnc" ]; then
