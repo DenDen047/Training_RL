@@ -128,7 +128,6 @@ class Environment:
         self.agent = Agent(brain)   # 環境内で行動するagenetを生成
 
     def run(self):
-        # ParameterServerの重みを自身のLocalBrainにコピー
         global FRAMES   # session全体での試行回数
         global IS_LEARNED
 
@@ -162,7 +161,7 @@ class Environment:
 
             s = s_
             r_sum += r
-            if done or step % T_MAX == 0:
+            if done or FRAMES % T_MAX == 0:
                 # 終了時にTmaxごとに，parameterServerの重みを更新
                 if not IS_LEARNED and self.thread_type is 'train':
                     self.agenet.brain.update_parameter_server()
@@ -184,10 +183,10 @@ class Environment:
         if self.total_reward_vec.mean() > 199:
             IS_LEARNED = True
             time.sleep(2.0) # この時間で，他のtrain threadが止まる
-            self.agent.brain.push_parameter_server()    # 成功したスレッドのパラメータをparameterSereverにわたす
 
 
 class Agent(object):
+    # 行動を決定するクラス
     def __init__(self, name, parameter_server):
         self.brain = brain  # 行動を決定するための脳
         self.memory = []    # s,a,r,s_を保存するメモリ
@@ -207,7 +206,6 @@ class Agent(object):
 
             # a = np.argmax(p)    # 最大確率の行動を選択
             a = np.random.choice(NUM_ACTIONS, p=p[0])   # 確率p[0]に従って，行動を選択
-
             return a
 
     def advantage_push_local_brain(self, s, a, r, s_):  # advantageを考慮したs,a,r,s_っをbrainに与える
@@ -272,13 +270,15 @@ class ParameterServer:
 
 
 class Brain:
-    def __init__(self, name, parameter_server):
+    def __init__(self):
         # globalなparameter_serverをメンバ変数として持つ
-        with tf.name_scope(name):
+        with tf.name_scope('brain'):
             self.train_queue = [[] for i in range(5)]   # s, a, r, s', s' terminal mask
             K.set_session(SESS)
             self.model = self._build_model()    # NNを生成
-            self._build_graph(name, parameter_server)   # NNの学習やメソッドを定義
+            self.opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE)  # loss関数を最小化していくoptimizerの定義
+            self.prob_old = 1
+            self.graph = self._build_graph()    # NNの学習やメソッドを定義
 
     def _build_model(self):
         l_input = Input(batch_shape=(None, NUM_STATES))
@@ -287,10 +287,11 @@ class Brain:
         out_value = Dense(1, activation='linear')(l_dense)
         model = Model(inputs=[l_input], outputs=[out_actions, out_value])
         model._make_predict_function()  # have to initialize before threading
+        plot_model(model, to_file='PPO.png', show_shapes=True)
         return model
 
-    def _build_graph(self, name, parameter_server):
-        # tensorflowでNNの重みをどう学習させるかを定義する
+    def build_graph(self):
+        # tensorflowでNNの重みをどう学習させるかを定義
         self.s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))
         self.a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
         self.r_t = tf.placeholder(tf.float32, shape=(None, 1))
@@ -307,10 +308,12 @@ class Brain:
         r_clip = r_theta
         r_clip = tf.clip_by_value(
             r_clip,
-            r_theta - EPSILON, r_theta + EPSILON
+            clip_value_min=r_theta - EPSILON,
+            clip_value_max=r_theta + EPSILON
         )
 
-        clipped_advantage_CPI = tf.multiply(r_clip, tf.stop_gradient(advantage))
+        clipped_advantage_CPI = tf.multiply(
+            r_clip, tf.stop_gradient(advantage))
         loss_CLIP = -tf.reduce_mean(
             tf.minimum(advantage_CPI, clipped_advantage_CPI),
             axis=1,
@@ -357,7 +360,8 @@ class Brain:
         SESS.run(minimize, feed_dict)   # Brainの重みを更新
         self.prob_old = self.prob
 
-    def predict_p():
+    def predict_p(self, s):
+        # 状態sから各actionの確率ベクトルpを返す
         p, v = self.model.predict(s)
         return p
 
