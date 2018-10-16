@@ -95,8 +95,8 @@ def main():
 class Worker_thread:
     # スレッドになるクラス
     # スレッドは学習環境environmentを持つ
-    def __init__(self, thread_name, thread_type, parameter_server):
-        self.environment = Environment(thread_name, thread_type, parameter_server)
+    def __init__(self, thread_name, thread_type, brain):
+        self.environment = Environment(thread_name, thread_type, brain)
         self.thread_type = thread_type
 
     def run(self):
@@ -121,7 +121,7 @@ class Environment:
     total_reward_vec = np.zeros(10) # 総報酬を10試行分格納して，平均総報酬を求める
     count_trial_each_thread = 0 # 各環境の試行回数
 
-    def __init__(self, name, thread_type, parameter_server):
+    def __init__(self, name, thread_type, brain):
         self.name = name
         self.thread_type = thread_type
         self.env = gym.make(ENV)
@@ -208,7 +208,7 @@ class Agent(object):
             a = np.random.choice(NUM_ACTIONS, p=p[0])   # 確率p[0]に従って，行動を選択
             return a
 
-    def advantage_push_local_brain(self, s, a, r, s_):  # advantageを考慮したs,a,r,s_っをbrainに与える
+    def advantage_push_brain(self, s, a, r, s_):  # advantageを考慮したs,a,r,s_っをbrainに与える
         def get_sample(memory, n):
             # advantageを考慮し，
             # メモリからnステップ後の状態とnステップ後までのr_sumを取得する関数
@@ -222,14 +222,16 @@ class Agent(object):
         self.memory.append((s, a_cats, r, s_))
 
         # 前ステップの「時間割引Nステップ分の総報酬r_sum」を利用して，現ステップのr_sumを計算
-        self.r_sum = (self.r_sum  + r * GAMMA_N) / GAMMA    # r0は後で引き算している
+        self.r_sum = (self.r_sum + r * GAMMA_N) / GAMMA    # r0は後で引き算している
 
         # advantageを考慮しながら，localBrainに経験を入力する
         if s_ is None:
             while len(self.memory) > 0:
+                # nステップ後のパラメータを記録
                 n = len(self.memory)
                 s, a, r, s_ = get_sample(self.memory, n)
                 self.brain.train_push(s, a, r, s_)
+                # 次のループに備えて，
                 self.r_sum = (self.r_sum - self.memory[0][2]) / GAMMA
                 self.memory.pop(0)  # 指定した位置の要素を削除し、値を取得
 
@@ -238,7 +240,7 @@ class Agent(object):
         if len(self.memory) >= N_STEP_RETURN:
             s, a, r, s_ = get_sample(self.memory, N_STEP_RETURN)
             self.brain.train_push(s, a, r, s_)
-            self.r_sum = self.r_sum - self.memory[0][2] # r0を引き算
+            self.r_sum -= self.memory[0][2] # r0を引き算
             self.memory.pop(0)
 
 
